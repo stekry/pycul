@@ -1,5 +1,14 @@
-# pycul
-access CUL stick (based on http://culfw.de/) using Python3 
+# pycul & cul2mqtt
+access CUL stick (based on http://culfw.de/) using Python3 - also includes MQTT frontend
+
+This is a fork of https://github.com/dirkclemens/pycul
+
+Goals of this fork:
+* get code working with Python 3.9
+* implement flexible device name mapping
+* focuses on FS20
+
+
 
 CUL stick: http://shop.busware.de/product_info.php/cPath/1_35/products_id/29
 
@@ -7,9 +16,9 @@ CUL stick: http://shop.busware.de/product_info.php/cPath/1_35/products_id/29
 ### usage of cul2mqtt.py:
 
 change the folling setting depending on the local setup   
-* cul_port            = '/dev/ttyACM1'
-* cul_baud            = 9600
-* mqtt_server         = '192.168.2.36'
+* cul_port            = '/dev/ttyACM0'
+* cul_baud            = 38400
+* mqtt_server         = '127.0.0.2'
 * mqtt_port           = 1883
 * mqtt_SubscribeTopic = 'smarthome/cul/to/#'
 * mqtt_PublishTopic   = 'smarthome/cul/from/'
