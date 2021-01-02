@@ -24,7 +24,7 @@
 
 import os
 import sys
-from time import strftime, localtime
+from time import strftime, localtime, sleep
 import time
 import binascii
 import asyncio
@@ -32,17 +32,18 @@ import serial_asyncio
 import aiomqtt
 from functools import partial
 import re
-
+import json
 ################################################################################
 # settings
 ################################################################################
 #cul_port            = '/dev/serial/by-id/usb-1a86_USB2.0-Serial-if00-port0' # /dev/ttyUSB0
-cul_port            = '/dev/ttyUSB0'
+cul_fs20cfg         = "culfs20.json"
+cul_port            = '/dev/ttyACM0'
 cul_baud            = 38400
-mqtt_server         = '192.168.2.36'
+mqtt_server         = '127.0.0.1'
 mqtt_port           = 1883
-mqtt_SubscribeTopic = 'smarthome/cul/to/#'
-mqtt_PublishTopic   = 'smarthome/cul/device/'
+mqtt_SubscribeTopic = 'cul/command/#'
+mqtt_PublishTopic   = 'cul/status/'
 mqtt_user           = '***'
 mqtt_pass           = '***'
 mqtt_ca             = ''
@@ -59,7 +60,11 @@ if not os.path.exists(cul_port):
 ################################################################################
 # defines 
 ################################################################################
-FS20 			= {"DC6900":"LichtKueche", "DC6901":"LichtAussenwand", "DC6902":"LichtKellerflur", "DC6931":"LichtGartentor", "DC6903":"LichtGartentorX", "DC69B0":"LichtDachHinten", "DC69B1":"LichtDachMitte", "DC69B2":"LichtDachTreppe", "536200":"Klingel1", "536201":"Klingel2", "A7A300":"Bewegung1", "557A00":"Bewegung2", "EEEF00":"FS20S8M_1", "EEEF01":"FS20S8M_2", "EEEF02":"FS20S8M_3"}
+if os.path.exists(cul_fs20cfg):
+	with open(cul_fs20cfg, "r") as f:
+		FS20 =json.load(f)
+else:
+	FS20=dict # 			= {"DC6900":"LichtKueche", "DC6901":"LichtAussenwand", "DC6902":"LichtKellerflur", "DC6931":"LichtGartentor", "DC6903":"LichtGartentorX", "DC69B0":"LichtDachHinten", "DC69B1":"LichtDachMitte", "DC69B2":"LichtDachTreppe", "536200":"Klingel1", "536201":"Klingel2", "A7A300":"Bewegung1", "557A00":"Bewegung2", "EEEF00":"FS20S8M_1", "EEEF01":"FS20S8M_2", "EEEF02":"FS20S8M_3"}
 FHT80 			= {"552D":"Multiraum", "1621":"Erdgeschoss", "0B48":"Lina", "095C":"Nico", "5A5B":"Dach"}
 FHT80TF 		= {"52FB7B":"Multiraum", "9F63ED":"Kueche", "AD141B":"Lina", "7D66C0":"Nico", "5A3392":"Kellerbuero", "005E4F":"Kellertuere", "B79DA0":"Haustuere"}
 
@@ -109,6 +114,16 @@ fhttfkcodes = {
     "0f":"Test:Success"
 }
 
+
+def GetKey(dictA, val, default=None):
+   for key, value in dictA.items():
+      if val == value:
+         return key
+   return default
+
+
+
+
 ################################################################################
 # CUL Stick - serial asyncIO interface
 # from https://github.com/pyserial/pyserial-asyncio/blob/master/serial_asyncio/__init__.py
@@ -129,10 +144,12 @@ class culRxTx(asyncio.Protocol):
 
 		# initialize CUL
 		self.transport.serial.write(b'V\r\nX21\r\n')
-		asyncio.sleep(0.3)
+		#asyncio.sleep(0.3)
+		sleep(0.3)
 
 		self.transport.serial.write(cul_init)
-		asyncio.sleep(0.3)
+		#asyncio.sleep(0.3)
+		sleep(0.3)
 
 		print('CUL init done.')
 
@@ -158,13 +175,14 @@ class culRxTx(asyncio.Protocol):
 
 
 	def sendFS20(self, msg, cmd='toggle', dur=None):
+		print(f"sendFS20: msg={msg}, cmd={cmd}, dur={dur}")
 		if (msg[0] == 'F'):
 			hausc   = msg[1:5] # FS20-Hauscode	DC69
 			devadr  = msg[5:7] # FS20-Adresse	B1
 			#dur     = None
 			#cmd     = "toggle"
 			#cde     = 18 # toggle, dezimal
-			cde 		= fs20codes.index(cmd)
+			cde 		= int(GetKey(fs20codes,cmd),16)
 			ee		= ""
 			if not dur is None:
 				cde |= 0x20
@@ -195,12 +213,13 @@ class culRxTx(asyncio.Protocol):
 		# data = bytes(msg+terminate, 'ascii')
 		while True:
 			rawmsg = await self.queueTX.get()
+			print(f"raw messsage from mqtt:{rawmsg}")
 			msg,rawcmd = rawmsg.split('=')
-			subcmd 	= ''
+			subcmd 	= None
 			cmd		= rawcmd
 			if ' ' in rawcmd: # if cmd contains two parts
 				cmd,subcmd = rawcmd.split(' ')
-			#print('msg:%s >>>> cmd:%s >>>subcmd:%s' % (msg,cmd,subcmd))
+			print('msg:%s >>>> cmd:%s >>>subcmd:%s' % (msg,cmd,subcmd))
 
 			if msg[0] in ['F','l','T','t','V','X','?','#']:
 				if (msg[0] == 'V'): #Version
@@ -214,7 +233,7 @@ class culRxTx(asyncio.Protocol):
 					#print('CUL:     sending raw %s' % rawcmd)
 					self.transport.serial.write(bytes('%s\r\n' % (rawcmd, ), 'ascii'))
 				if (msg[0] == 'F'):
-					#print('CUL:     sending to FS20 %s' % (msg, ))
+					print('CUL:     sending to FS20 %s' % (msg, ))
 					self.sendFS20(msg,cmd,subcmd)
 				if (msg[0] == 'T'):
 					#print('CUL:     sending to FHT %s' % (msg, ))
@@ -620,11 +639,15 @@ async def culDecode(client, msg):
 # MQTT interface
 ################################################################################
 async def mqtt(mqttTxQueue, canTxQueue, server, port, user, passwd, ca):
-	client = aiomqtt.Client(loop)
+	client = aiomqtt.Client()
+	#client = aiomqtt.Client(loop)
+	print ("mqtt client created")
 	client.loop_start()
+	print ("mqtt client loop started")
 
-	connected = asyncio.Event(loop=loop)
+	connected = asyncio.Event()
 	def on_connect(client, userdata, flags, rc):
+		print ("mqtt connected")
 		connected.set()
 	client.on_connect = on_connect
 
@@ -644,7 +667,7 @@ async def mqtt(mqttTxQueue, canTxQueue, server, port, user, passwd, ca):
 		print("MQTT loop stopped!")
 		sys.exit(-1)    
 
-	subscribed = asyncio.Event(loop=loop)
+	subscribed = asyncio.Event()
 	def on_subscribe(client, userdata, mid, granted_qos):
 		subscribed.set()
 	client.on_subscribe = on_subscribe
@@ -698,13 +721,12 @@ asyncio.ensure_future(culSAIO)
 asyncio.ensure_future(mqtt(mqttTxQueue, culTxQueue, mqtt_server, mqtt_port, mqtt_user, mqtt_pass, mqtt_ca))
 
 try:
-	loop.run_until_complete(culSAIO)
+	#loop.run_until_complete(culSAIO)
 	loop.run_forever()
 except KeyboardInterrupt:
 	#culSAIO.serial().write(b'X00\r\n') # close CUL
 	culSAIO.close() # close serial
+	#loop.close()
+finally:
 	loop.close()
-#finally:
-
-loop.close()
 
